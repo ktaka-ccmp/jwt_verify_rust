@@ -1,13 +1,14 @@
 use base64::{engine::general_purpose, Engine as _};
 use clap::Parser;
-use jsonwebtoken::{decode_header, Algorithm, DecodingKey, Validation, TokenData};
+use jsonwebtoken::crypto::verify;
+use jsonwebtoken::{Algorithm, DecodingKey};
+use pkcs1::LineEnding;
 use reqwest::blocking::get;
 use rsa::pkcs1::EncodeRsaPublicKey;
+use rsa::{BigUint, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::time::{SystemTime, UNIX_EPOCH};
-use rsa::{RsaPublicKey, BigUint};
-use pkcs1::LineEnding;
 
 #[derive(Parser)]
 struct Opts {
@@ -42,17 +43,17 @@ struct Jwk {
     kty: String,
     kid: String,
     alg: String,
-    n: Option<String>, // RSA modulus
-    e: Option<String>, // RSA exponent
-    x: Option<String>, // EC x-coordinate
-    y: Option<String>, // EC y-coordinate
+    n: Option<String>,   // RSA modulus
+    e: Option<String>,   // RSA exponent
+    x: Option<String>,   // EC x-coordinate
+    y: Option<String>,   // EC y-coordinate
     crv: Option<String>, // EC curve
-    k: Option<String>, // Symmetric key
+    k: Option<String>,   // Symmetric key
 }
 
 fn fetch_openid_configuration(issuer: &str) -> Result<OpenIdConfiguration, Box<dyn Error>> {
     let url = format!("{}/.well-known/openid-configuration", issuer);
-    let resp = get(&url)?;
+    let resp = get(url)?;
     let config: OpenIdConfiguration = resp.json()?;
     Ok(config)
 }
@@ -68,7 +69,9 @@ fn find_jwk<'a>(jwks: &'a Jwks, kid: &str) -> Option<&'a Jwk> {
 }
 
 fn decode_base64_url_safe(input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    general_purpose::URL_SAFE_NO_PAD.decode(input).map_err(|e| e.into())
+    general_purpose::URL_SAFE_NO_PAD
+        .decode(input)
+        .map_err(|e| e.into())
 }
 
 fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>> {
@@ -76,7 +79,8 @@ fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>>
         "RS256" | "RS384" | "RS512" => {
             let n = decode_base64_url_safe(jwk.n.as_ref().ok_or("Missing 'n' for RSA key")?)?;
             let e = decode_base64_url_safe(jwk.e.as_ref().ok_or("Missing 'e' for RSA key")?)?;
-            let rsa_public_key = RsaPublicKey::new(BigUint::from_bytes_be(&n), BigUint::from_bytes_be(&e))?;
+            let rsa_public_key =
+                RsaPublicKey::new(BigUint::from_bytes_be(&n), BigUint::from_bytes_be(&e))?;
             let pem = rsa_public_key.to_pkcs1_pem(LineEnding::default())?;
             println!("Constructed PEM: {}", pem);
             Ok(DecodingKey::from_rsa_pem(pem.as_bytes())?)
@@ -92,7 +96,7 @@ fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>>
             let k = decode_base64_url_safe(jwk.k.as_ref().ok_or("Missing 'k' for symmetric key")?)?;
             Ok(DecodingKey::from_secret(&k))
         }
-        _ => Err(format!("Unsupported algorithm: {}", jwk.alg).into())
+        _ => Err(format!("Unsupported algorithm: {}", jwk.alg).into()),
     }
 }
 
@@ -107,13 +111,22 @@ fn extract_iss_from_token(token: &str) -> Result<String, Box<dyn Error>> {
     Ok(claims.iss)
 }
 
-fn verify_signature(token: &str, decoding_key: &DecodingKey, alg: Algorithm) -> Result<TokenData<Claims>, Box<dyn Error>> {
-    let mut validation = Validation::new(alg);
-    validation.validate_exp = false;  // We will manually validate expiration
-    validation.validate_aud = false;  // We will manually validate audience
-    
-    match jsonwebtoken::decode::<Claims>(token, decoding_key, &validation) {
-        Ok(data) => Ok(data),
+fn verify_signature(
+    token: &str,
+    decoding_key: &DecodingKey,
+    alg: Algorithm,
+) -> Result<bool, Box<dyn Error>> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err("Invalid token format".into());
+    }
+
+    let message = format!("{}.{}", parts[0], parts[1]);
+    let signature = decode_base64_url_safe(parts[2])?;
+    let signature_str = general_purpose::URL_SAFE_NO_PAD.encode(signature);
+
+    match verify(&signature_str, message.as_bytes(), decoding_key, alg) {
+        Ok(valid) => Ok(valid),
         Err(err) => {
             println!("Failed to verify signature: {:?}", err);
             Err(Box::new(err))
@@ -124,7 +137,7 @@ fn verify_signature(token: &str, decoding_key: &DecodingKey, alg: Algorithm) -> 
 fn main() -> Result<(), Box<dyn Error>> {
     let opts: Opts = Opts::parse();
 
-    let header = decode_header(&opts.token)?;
+    let header = jsonwebtoken::decode_header(&opts.token)?;
     println!("Full token header: {:?}", header);
 
     let kid = header.kid.ok_or("Token does not have a 'kid' field")?;
@@ -142,31 +155,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     let decoding_key = convert_jwk_to_decoding_key(jwk)?;
     println!("Decoding key created");
 
-    match verify_signature(&opts.token, &decoding_key, alg) {
-        Ok(token_data) => {
-            let claims = token_data.claims;
-            println!("Signature is valid.");
-
-            if claims.iss != issuer {
-                return Err("Invalid issuer".into());
-            }
-            println!("Issuer is valid");
-
-            if claims.aud != opts.client_id {
-                return Err(format!("Invalid audience: expected {}, got {}", opts.client_id, claims.aud).into());
-            }
-            println!("Audience is valid");
-
-            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
-
-            if now < claims.iat || now > claims.exp {
-                return Err("Token is not valid at the current time".into());
-            }
-            println!("Token is valid at the current time");
-
-            println!("Token is valid. Claims: {:?}", claims);
-            Ok(())
-        }
-        Err(err) => Err(err.into()),
+    let signature_valid = verify_signature(&opts.token, &decoding_key, alg)?;
+    if !signature_valid {
+        return Err("Signature is not valid".into());
     }
+
+    let decoded_payload = decode_base64_url_safe(opts.token.split('.').collect::<Vec<&str>>()[1])?;
+    let claims: Claims = serde_json::from_slice(&decoded_payload)?;
+    println!("Signature is valid. Claims: {:?}", claims);
+
+    if claims.iss != issuer {
+        return Err("Invalid issuer".into());
+    }
+    println!("Issuer is valid");
+
+    if claims.aud != opts.client_id {
+        return Err(format!(
+            "Invalid audience: expected {}, got {}",
+            opts.client_id, claims.aud
+        )
+        .into());
+    }
+    println!("Audience is valid");
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
+
+    if now < claims.iat || now > claims.exp {
+        return Err("Token is not valid at the current time".into());
+    }
+    println!("Token is valid at the current time");
+
+    println!("Token is valid. Claims: {:?}", claims);
+    Ok(())
 }
