@@ -76,8 +76,11 @@ fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>>
         "RS256" | "RS384" | "RS512" => {
             let n = decode_base64_url_safe(jwk.n.as_ref().ok_or("Missing 'n' for RSA key")?)?;
             let e = decode_base64_url_safe(jwk.e.as_ref().ok_or("Missing 'e' for RSA key")?)?;
+            println!("Decoded n: {:?}", n);
+            println!("Decoded e: {:?}", e);
             let rsa_public_key = RsaPublicKey::new(BigUint::from_bytes_be(&n), BigUint::from_bytes_be(&e))?;
             let pem = rsa_public_key.to_pkcs1_pem(LineEnding::default())?;
+            println!("Constructed PEM: {}", pem);
             Ok(DecodingKey::from_rsa_pem(pem.as_bytes())?)
         }
         "ES256" | "ES384" | "ES512" => {
@@ -96,9 +99,17 @@ fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>>
 }
 
 fn verify_signature(token: &str, decoding_key: &DecodingKey, alg: Algorithm) -> Result<TokenData<Claims>, Box<dyn Error>> {
-    let validation = Validation::new(alg);
-    let token_data = jsonwebtoken::decode::<Claims>(token, decoding_key, &validation)?;
-    Ok(token_data)
+    let mut validation = Validation::new(alg);
+    validation.validate_exp = false;  // We will manually validate expiration
+    validation.validate_aud = false;  // We will manually validate audience
+    
+    match jsonwebtoken::decode::<Claims>(token, decoding_key, &validation) {
+        Ok(data) => Ok(data),
+        Err(err) => {
+            println!("Failed to verify signature: {:?}", err);
+            Err(Box::new(err))
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -120,13 +131,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let decoding_key = convert_jwk_to_decoding_key(jwk)?;
     println!("Decoding key created");
-    
-    let token_data: Result<TokenData<Claims>, Box<dyn Error>> = if let Ok(token_data) = verify_signature(&opts.token, &decoding_key, alg) {
-        Ok(token_data)
-    } else {
+
+    let token_data = verify_signature(&opts.token, &decoding_key, alg);
+    if token_data.is_err() {
         println!("Signature not valid");
         return Err("Signature not valid".into());
-    };
+    }
 
     let claims = token_data.unwrap().claims;
     println!("Signature is valid. Claims: {:?}", claims);
@@ -136,7 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if claims.aud != opts.client_id {
-        return Err("Invalid audience".into());
+        return Err(format!("Invalid audience: expected {}, got {}", opts.client_id, claims.aud).into());
     }
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
@@ -145,5 +155,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("Token is not valid at the current time".into());
     }
 
+    println!("Token is valid. Claims: {:?}", claims);
     Ok(())
 }
