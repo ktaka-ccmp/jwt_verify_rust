@@ -51,6 +51,7 @@ struct Jwk {
     k: Option<String>,   // Symmetric key
 }
 
+// Fetch OpenID configuration for a given issuer
 fn fetch_openid_configuration(issuer: &str) -> Result<OpenIdConfiguration, Box<dyn Error>> {
     let url = format!("{}/.well-known/openid-configuration", issuer);
     let resp = get(url)?;
@@ -58,22 +59,26 @@ fn fetch_openid_configuration(issuer: &str) -> Result<OpenIdConfiguration, Box<d
     Ok(config)
 }
 
+// Fetch JWKS (JSON Web Key Set) from a URL
 fn fetch_jwks(jwks_url: &str) -> Result<Jwks, Box<dyn Error>> {
     let resp = get(jwks_url)?;
     let jwks: Jwks = resp.json()?;
     Ok(jwks)
 }
 
+// Find the JWK with the matching 'kid'
 fn find_jwk<'a>(jwks: &'a Jwks, kid: &str) -> Option<&'a Jwk> {
     jwks.keys.iter().find(|key| key.kid == kid)
 }
 
+// Decode base64 URL-safe strings
 fn decode_base64_url_safe(input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     general_purpose::URL_SAFE_NO_PAD
         .decode(input)
         .map_err(|e| e.into())
 }
 
+// Convert JWK to DecodingKey based on its algorithm
 fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>> {
     match jwk.alg.as_str() {
         "RS256" | "RS384" | "RS512" => {
@@ -100,6 +105,7 @@ fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>>
     }
 }
 
+// Extract the issuer from the token payload
 fn extract_iss_from_token(token: &str) -> Result<String, Box<dyn Error>> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
@@ -111,6 +117,7 @@ fn extract_iss_from_token(token: &str) -> Result<String, Box<dyn Error>> {
     Ok(claims.iss)
 }
 
+// Verify the token signature
 fn verify_signature(
     token: &str,
     decoding_key: &DecodingKey,
@@ -151,6 +158,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let jwks = fetch_jwks(&config.jwks_uri)?;
 
     let jwk = find_jwk(&jwks, &kid).ok_or("No matching key found in JWKS")?;
+    println!("JWK found: {:?}", jwk);
 
     let decoding_key = convert_jwk_to_decoding_key(jwk)?;
     println!("Decoding key created");
