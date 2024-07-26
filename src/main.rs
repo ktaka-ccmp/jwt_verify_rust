@@ -76,8 +76,8 @@ fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>>
         "RS256" | "RS384" | "RS512" => {
             let n = decode_base64_url_safe(jwk.n.as_ref().ok_or("Missing 'n' for RSA key")?)?;
             let e = decode_base64_url_safe(jwk.e.as_ref().ok_or("Missing 'e' for RSA key")?)?;
-            println!("Decoded n: {:?}", n);
-            println!("Decoded e: {:?}", e);
+            // println!("Decoded n: {:?}", n);
+            // println!("Decoded e: {:?}", e);
             let rsa_public_key = RsaPublicKey::new(BigUint::from_bytes_be(&n), BigUint::from_bytes_be(&e))?;
             let pem = rsa_public_key.to_pkcs1_pem(LineEnding::default())?;
             println!("Constructed PEM: {}", pem);
@@ -96,6 +96,17 @@ fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>>
         }
         _ => Err(format!("Unsupported algorithm: {}", jwk.alg).into())
     }
+}
+
+fn extract_iss_from_token(token: &str) -> Result<String, Box<dyn Error>> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err("Invalid token format".into());
+    }
+    let payload = parts[1];
+    let decoded_payload = decode_base64_url_safe(payload)?;
+    let claims: Claims = serde_json::from_slice(&decoded_payload)?;
+    Ok(claims.iss)
 }
 
 fn verify_signature(token: &str, decoding_key: &DecodingKey, alg: Algorithm) -> Result<TokenData<Claims>, Box<dyn Error>> {
@@ -123,35 +134,37 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Algorithm from JWT header: {:?}", alg);
 
-    let issuer = "https://accounts.google.com";
-    let config = fetch_openid_configuration(issuer)?;
+    let issuer = extract_iss_from_token(&opts.token)?;
+    println!("Issuer from token: {}", issuer);
+    let config = fetch_openid_configuration(&issuer)?;
     let jwks = fetch_jwks(&config.jwks_uri)?;
 
     let jwk = find_jwk(&jwks, &kid).ok_or("No matching key found in JWKS")?;
 
     let decoding_key = convert_jwk_to_decoding_key(jwk)?;
-    println!("Decoding key created");
+    // println!("Decoding key created");
 
-    let token_data = verify_signature(&opts.token, &decoding_key, alg);
-    if token_data.is_err() {
-        println!("Signature not valid");
-        return Err("Signature not valid".into());
-    }
+    let token_data = verify_signature(&opts.token, &decoding_key, alg)?;
+    let claims = token_data.claims;
+    println!("Signature is valid.");
 
-    let claims = token_data.unwrap().claims;
-    println!("Signature is valid. Claims: {:?}", claims);
-
-    if claims.iss != issuer {
+    if claims.iss == issuer {
+        println!("Issuer is valid");
+    } else {
         return Err("Invalid issuer".into());
     }
 
-    if claims.aud != opts.client_id {
+    if claims.aud == opts.client_id {
+        println!("Audience is valid");
+    } else {
         return Err(format!("Invalid audience: expected {}, got {}", opts.client_id, claims.aud).into());
     }
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
 
-    if now < claims.iat || now > claims.exp {
+    if now >= claims.iat && now <= claims.exp {
+        println!("Token is valid at the current time");
+    } else {
         return Err("Token is not valid at the current time".into());
     }
 
