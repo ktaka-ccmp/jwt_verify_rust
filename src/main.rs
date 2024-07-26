@@ -144,30 +144,31 @@ fn main() -> Result<(), Box<dyn Error>> {
     let decoding_key = convert_jwk_to_decoding_key(jwk)?;
     // println!("Decoding key created");
 
-    let token_data = verify_signature(&opts.token, &decoding_key, alg)?;
-    let claims = token_data.claims;
-    println!("Signature is valid.");
+    match verify_signature(&opts.token, &decoding_key, alg) {
+        Ok(token_data) => {
+            let claims = token_data.claims;
+            println!("Signature is valid.");
 
-    if claims.iss == issuer {
-        println!("Issuer is valid");
-    } else {
-        return Err("Invalid issuer".into());
+            match claims.iss == issuer {
+                true => println!("Issuer is valid"),
+                false => return Err("Invalid issuer".into()),
+            }
+
+            match claims.aud == opts.client_id {
+                true => println!("Audience is valid"),
+                false => return Err(format!("Invalid audience: expected {}, got {}", opts.client_id, claims.aud).into()),
+            }
+
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
+
+            match now >= claims.iat && now <= claims.exp {
+                true => println!("Token is valid at the current time"),
+                false => return Err("Token is not valid at the current time".into()),
+            }
+
+            println!("Token is valid. Claims: {:?}", claims);
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
     }
-
-    if claims.aud == opts.client_id {
-        println!("Audience is valid");
-    } else {
-        return Err(format!("Invalid audience: expected {}, got {}", opts.client_id, claims.aud).into());
-    }
-
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
-
-    if now >= claims.iat && now <= claims.exp {
-        println!("Token is valid at the current time");
-    } else {
-        return Err("Token is not valid at the current time".into());
-    }
-
-    println!("Token is valid. Claims: {:?}", claims);
-    Ok(())
 }
