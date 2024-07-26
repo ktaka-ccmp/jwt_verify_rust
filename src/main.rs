@@ -76,8 +76,6 @@ fn convert_jwk_to_decoding_key(jwk: &Jwk) -> Result<DecodingKey, Box<dyn Error>>
         "RS256" | "RS384" | "RS512" => {
             let n = decode_base64_url_safe(jwk.n.as_ref().ok_or("Missing 'n' for RSA key")?)?;
             let e = decode_base64_url_safe(jwk.e.as_ref().ok_or("Missing 'e' for RSA key")?)?;
-            // println!("Decoded n: {:?}", n);
-            // println!("Decoded e: {:?}", e);
             let rsa_public_key = RsaPublicKey::new(BigUint::from_bytes_be(&n), BigUint::from_bytes_be(&e))?;
             let pem = rsa_public_key.to_pkcs1_pem(LineEnding::default())?;
             println!("Constructed PEM: {}", pem);
@@ -142,29 +140,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     let jwk = find_jwk(&jwks, &kid).ok_or("No matching key found in JWKS")?;
 
     let decoding_key = convert_jwk_to_decoding_key(jwk)?;
-    // println!("Decoding key created");
+    println!("Decoding key created");
 
     match verify_signature(&opts.token, &decoding_key, alg) {
         Ok(token_data) => {
             let claims = token_data.claims;
             println!("Signature is valid.");
 
-            match claims.iss == issuer {
-                true => println!("Issuer is valid"),
-                false => return Err("Invalid issuer".into()),
+            if claims.iss != issuer {
+                return Err("Invalid issuer".into());
             }
+            println!("Issuer is valid");
 
-            match claims.aud == opts.client_id {
-                true => println!("Audience is valid"),
-                false => return Err(format!("Invalid audience: expected {}, got {}", opts.client_id, claims.aud).into()),
+            if claims.aud != opts.client_id {
+                return Err(format!("Invalid audience: expected {}, got {}", opts.client_id, claims.aud).into());
             }
+            println!("Audience is valid");
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
 
-            match now >= claims.iat && now <= claims.exp {
-                true => println!("Token is valid at the current time"),
-                false => return Err("Token is not valid at the current time".into()),
+            if now < claims.iat || now > claims.exp {
+                return Err("Token is not valid at the current time".into());
             }
+            println!("Token is valid at the current time");
 
             println!("Token is valid. Claims: {:?}", claims);
             Ok(())
