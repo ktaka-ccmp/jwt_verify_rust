@@ -157,40 +157,73 @@ fn main() -> Result<(), Box<dyn Error>> {
     let decoding_key = convert_jwk_to_decoding_key(jwk)?;
     println!("Decoding key created");
 
+    let mut summary = vec![];
+
     let signature_valid = verify_signature(&opts.token, &decoding_key, alg)?;
-    if !signature_valid {
-        return Err("Signature is not valid".into());
+    if signature_valid {
+        summary.push("Signature check: pass".to_string());
+    } else {
+        summary.push("Signature check: fail".to_string());
+        println!(
+            "Signature check:\n Signature is not valid"
+        );
     }
 
     let decoded_payload = decode_base64_url_safe(opts.token.split('.').collect::<Vec<&str>>()[1])?;
     let claims: Claims = serde_json::from_slice(&decoded_payload)?;
-    println!("Signature is valid. Claims: {:?}", claims);
 
-    if let Some(expected_issuer) = &opts.issuer {
-        if claims.iss != *expected_issuer {
-            return Err("Invalid issuer".into());
+    if let Some(ref client_id) = opts.client_id {
+        if claims.aud == *client_id {
+            summary.push("Audience check: pass".to_string());
+        } else {
+            summary.push("Audience check: fail".to_string());
+            println!(
+                "Audience check failed:\n expected: {}\n actual: {}",
+                client_id, claims.aud,
+            );
         }
-        println!("Issuer is valid");
+    } else {
+        summary.push("Audience(ClientId) check: skip".to_string());
     }
 
-    if let Some(expected_audience) = &opts.client_id {
-        if claims.aud != *expected_audience {
-            return Err(format!(
-                "Invalid audience: expected {}, got {}",
-                expected_audience, claims.aud
-            )
-            .into());
+    if let Some(ref supplied_issuer) = opts.issuer {
+        if claims.iss == *supplied_issuer {
+            summary.push("Issuer check: pass".to_string());
+        } else {
+            summary.push("Issuer check: fail".to_string());
+            println!(
+                "Issuer check failed:\n expected: {}\n actual: {}",
+                supplied_issuer, claims.iss,
+            );
         }
-        println!("Audience is valid");
+    } else {
+        summary.push("Issuer check: skip".to_string());
     }
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
 
-    if now < claims.iat || now > claims.exp {
-        return Err("Token is not valid at the current time".into());
+    if now < claims.iat {
+        summary.push("Expiration check: fail".to_string());
+        println!(
+            "Expiration check failed:\n Before effective period :  now {} < issued at {}",
+            now, claims.iat,
+        );
+    } else if now > claims.exp {
+        summary.push("Expiration check: fail".to_string());
+        println!(
+            "Expiration check failed:\n Token already expired : expires at {} < now {}",
+            claims.exp, now,
+        );
+    } else {
+        summary.push("Expiration check: pass".to_string());
     }
-    println!("Token is valid at the current time");
 
-    println!("Token is valid. Claims: {:?}", claims);
+    println!("\nSummary:");
+    for line in summary {
+        println!(" {}", line);
+    }
+
+    println!("\nClaims in id_token: \n {:?}", claims);
+
     Ok(())
 }
