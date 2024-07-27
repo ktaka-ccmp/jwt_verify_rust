@@ -164,9 +164,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         summary.push("Signature check: pass".to_string());
     } else {
         summary.push("Signature check: fail".to_string());
-        println!(
-            "Signature check:\n Signature is not valid"
-        );
+        println!("Signature check:\n Signature is not valid");
     }
 
     let decoded_payload = decode_base64_url_safe(opts.token.split('.').collect::<Vec<&str>>()[1])?;
