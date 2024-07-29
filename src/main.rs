@@ -10,6 +10,7 @@ use rsa::RsaPublicKey;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use std::fmt;
 
 #[derive(Parser)]
 struct Opts {
@@ -23,14 +24,73 @@ struct Opts {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
+    // pub struct IdTokenClaims {
+    // Required claims
     iss: String,
     sub: String,
-    email: String,
-    exp: usize,
     aud: String,
+    exp: usize,
     iat: usize,
+
+    // Optional claims
+    auth_time: Option<u64>,
+    nonce: Option<String>,
+    acr: Option<String>,
+    amr: Option<Vec<String>>,
+    azp: Option<String>,
+    at_hash: Option<String>,
+    c_hash: Option<String>,
+    name: Option<String>,
+    given_name: Option<String>,
+    family_name: Option<String>,
+    middle_name: Option<String>,
+    nickname: Option<String>,
+    preferred_username: Option<String>,
+    profile: Option<String>,
+    picture: Option<String>,
+    website: Option<String>,
+    email: Option<String>,
+    email_verified: Option<bool>,
+    gender: Option<String>,
+    birthdate: Option<String>,
+    zoneinfo: Option<String>,
+    locale: Option<String>,
+    phone_number: Option<String>,
+    phone_number_verified: Option<bool>,
+    address: Option<Address>,
+    updated_at: Option<u64>,
     nbf: Option<usize>,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Address {
+    formatted: Option<String>,
+    street_address: Option<String>,
+    locality: Option<String>,
+    region: Option<String>,
+    postal_code: Option<String>,
+    country: Option<String>,
+}
+
+impl fmt::Display for Claims {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let claims_json = serde_json::to_value(self).map_err(|_| fmt::Error)?;
+
+        if let serde_json::Value::Object(map) = claims_json {
+            let mut json_map = serde_json::Map::new();
+            for (key, value) in map {
+                if !value.is_null() {
+                    json_map.insert(key, value);
+                }
+            }
+            let pretty_json = serde_json::to_string_pretty(&json_map).map_err(|_| fmt::Error)?;
+            write!(f, "{}", pretty_json)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenIdConfiguration {
@@ -301,7 +361,7 @@ fn main() -> Result<(), TokenVerificationError> {
         println!(" {}", line);
     }
 
-    println!("\nClaims in id_token: \n {:?}", claims);
+    println!("\nClaims in id_token: \n {}", claims);
 
     Ok(())
 }
