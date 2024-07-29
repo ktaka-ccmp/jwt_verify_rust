@@ -8,9 +8,9 @@ use pkcs1::LineEnding;
 use reqwest::blocking::get;
 use rsa::RsaPublicKey;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use std::fmt;
 
 #[derive(Parser)]
 struct Opts {
@@ -90,7 +90,6 @@ impl fmt::Display for Claims {
         }
     }
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenIdConfiguration {
